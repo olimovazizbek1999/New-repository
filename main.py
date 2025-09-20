@@ -1,42 +1,46 @@
-from fastapi import FastAPI, Request, UploadFile, Form
+import os
+from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from services import gcs, processing
-import uuid
-import os
 
+# Load environment variables from .env
+load_dotenv()
+
+# FastAPI app
 app = FastAPI()
 
-GCS_BUCKET = os.environ.get("GCS_BUCKET")
-PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC")
+# Read env variables
+GCS_BUCKET = os.getenv("GCS_BUCKET")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open("templates/form.html") as f:
-        return f.read()
+    """Serve a simple HTML upload form."""
+    return """
+    <html>
+        <body>
+            <h2>Upload CSV File</h2>
+            <form action="/upload" method="post" enctype="multipart/form-data">
+                <input type="file" name="file" />
+                <input type="text" name="output_file" placeholder="Output filename" />
+                <button type="submit">Upload</button>
+            </form>
+        </body>
+    </html>
+    """
+
 
 @app.post("/upload")
-async def upload_csv(file: UploadFile, email: str = Form(...)):
-    job_id = str(uuid.uuid4())
-    input_path = f"jobs/{job_id}/input/{file.filename}"
+async def upload_csv(file: UploadFile, output_file: str = Form(...)):
+    """Upload CSV to GCS, process, and save results."""
+    input_path = f"input/{file.filename}"
+    output_path = f"output/{output_file}"
 
-    # Upload CSV to GCS
+    # Upload to GCS
     gcs.upload_fileobj(GCS_BUCKET, input_path, file.file)
 
-    # Create job manifest
-    manifest = {
-        "job_id": job_id,
-        "status": "queued",
-        "email": email,
-        "chunks_processed": 0,
-        "errors": []
-    }
-    gcs.upload_json(GCS_BUCKET, f"jobs/{job_id}/manifest.json", manifest)
+    # Process file (e.g., clean/transform)
+    processing.process_csv(GCS_BUCKET, input_path, output_path)
 
-    # Trigger first processing chunk
-    processing.start_job(job_id, GCS_BUCKET, PUBSUB_TOPIC)
-
-    return {"job_id": job_id, "message": "Job started."}
-
-@app.get("/healthz")
-async def health():
-    return {"status": "ok"}
+    return {"message": "File processed successfully", "output_file": output_file}

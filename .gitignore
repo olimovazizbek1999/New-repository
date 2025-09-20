@@ -1,2 +1,5 @@
 # .gitignore
 keys/*.json
+# Ignore keys and secrets
+keys/
+.env
