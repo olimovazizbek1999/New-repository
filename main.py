@@ -1,6 +1,6 @@
-import os
 from fastapi import FastAPI
 import uvicorn
+import os
 
 app = FastAPI()
 PORT = int(os.environ.get("PORT", 8080))
