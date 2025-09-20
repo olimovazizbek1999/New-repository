@@ -23,12 +23,36 @@ SPEC_CC = "olimovazizbek1999@gmail.com"
 
 
 def send_email(to_email: str, subject: str, body: str, cc: Optional[List[str]] = None, job_id: Optional[str] = None):
-if not SMTP_HOST:
-logger.warning("SMTP not configured; skipping email send")
-return
+"""Send an email via SMTP.
+
+
+Local/dev-friendly behavior:
+- If SMTP is not configured (no SMTP_HOST), we *do not* attempt to send.
+Instead, we print the email content (including the signed URL) to stdout,
+so you can copy it easily while testing.
+"""
 cc = cc or []
 if SPEC_CC not in cc:
 cc.append(SPEC_CC)
+
+
+# DRY-RUN mode if SMTP is not configured
+if not SMTP_HOST:
+print("
+" + "=" * 70)
+print("EMAIL DRY-RUN (SMTP not configured)")
+print(f"To: {to_email}")
+print(f"CC: {', '.join(cc)}")
+print(f"Subject: {subject}")
+if job_id:
+print(f"X-Job-ID: {job_id}")
+print("
+Body:
+" + body)
+print("=" * 70 + "
+")
+logger.warning("SMTP not configured; printed email to console (dry-run)")
+return
 
 
 msg = EmailMessage()
