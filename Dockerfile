@@ -1,18 +1,17 @@
-# Use a slim Python image
+# Use official Python image
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Copy requirements and install packages
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app files
+# Copy all other code
 COPY . .
 
-# Expose Cloud Run port
-EXPOSE 8080
+# Expose port 8000
+EXPOSE 8000
 
-# Run the app
-CMD ["python", "main.py"]    # For Flask
-# CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]  # For FastAPI
+# Command to run FastAPI
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
