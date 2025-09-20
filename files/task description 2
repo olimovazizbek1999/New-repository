@@ -1,0 +1,207 @@
+Objective
+
+Build a Python FastAPI web application, deployable on Google Cloud Run, that processes lead data from uploaded CSV files, enriches and cleans the data using OpenAI API + web scraping, and delivers the processed file back to the client via Google Cloud Storage (GCS) + email notification.
+
+Features & Requirements
+1. Web Interface
+
+Serve a simple HTML form (/) where users can:
+
+Upload a CSV file (columns A–O).
+
+Enter their email address.
+
+On submission:
+
+Save uploaded CSV to GCS (gs://bucket/jobs/<job_id>/input/filename.csv).
+
+Create a job manifest in GCS (JSON tracking state).
+
+Start first processing chunk.
+
+2. Processing Rules
+
+Operate only inside uploaded CSV, respecting columns A–O.
+
+Column modifications:
+
+A (First Name), B (Last Name), D (Company Name):
+
+Clean using OpenAI API (remove whitespace, irrelevant symbols).
+
+J (Company Website URL):
+
+If URL exists, fetch homepage (using requests + BeautifulSoup).
+
+Extract visible company name (prefer og:site_name, <title>, <h1>).
+
+Overwrite Column D with extracted name.
+
+P (new column):
+
+Generate a two-sentence email opener using OpenAI API.
+
+3. Email Opener Rules
+
+Style: professional, calm, specific.
+
+Tone: neutral-positive (no hype, no emojis, no questions).
+
+Content: based only on homepage visible text.
+
+Structure: exactly 2 sentences, each 10–18 words.
+
+Flow: second sentence must follow naturally and end cleanly (no sales pitch).
+
+4. Scalability & Chunking
+
+Handle CSVs with millions of rows.
+
+Split into chunks of ~10,000 rows per job (to fit Cloud Run’s 15-minute execution limit).
+
+Within each chunk:
+
+Cleaning API calls (columns A/B/D): batch 50–100 rows per OpenAI request.
+
+Opener generation (column P): batch 10–20 rows per OpenAI request.
+
+Save each chunk back to GCS (jobs/<job_id>/out/chunk_x.csv).
+
+Automatically schedule next chunk (via Pub/Sub or fallback synchronous loop) until all processed.
+
+5. Output & Delivery
+
+After last chunk:
+
+Merge all chunk files into final processed CSV (jobs/<job_id>/final/filename_processed.csv).
+
+Generate a signed GCS URL valid for 7 days.
+
+Send an email notification:
+
+To client’s provided email.
+
+CC olimovazizbek1999@gmail.com.
+
+Email body: signed download link only (no attachment).
+
+6. Error Handling & Monitoring
+
+Log all events & errors in execution logs.
+
+If a row fails → skip gracefully and continue.
+
+Always save partial results so no work is lost if the job restarts.
+
+Track status in job manifest (queued, running, done, error).
+
+Technical Deliverables
+A. Infrastructure & Config
+
+Dockerfile (Python 3.11-slim, Uvicorn, Cloud Run ready).
+
+requirements.txt (dependencies pinned).
+
+Deployment-ready for Cloud Run with env vars:
+
+GCS_BUCKET
+
+PUBSUB_TOPIC (optional, fallback sync mode)
+
+OPENAI_API_KEY
+
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+
+B. Code Structure
+lead-processor/
+│
+├── Dockerfile
+├── requirements.txt
+├── main.py                 # FastAPI entrypoint (routes, health check)
+│
+├── services/
+│   ├── gcs.py              # Storage helpers (upload, download, signed URLs, merge CSVs)
+│   ├── emailer.py          # Send email notifications
+│   ├── openai_utils.py     # Batch cleaning + opener generation
+│   ├── scraper.py          # Website scraping + company name extraction
+│   └── processing.py       # Chunk orchestration, row transforms, error handling
+│
+├── templates/
+│   └── form.html           # Upload form (CSV + email field)
+│
+└── tests/
+    └── test_processing.py  # Unit tests for cleaning + chunk merge
+
+C. Endpoints
+
+/ → HTML form (upload CSV + email).
+
+/upload → handles CSV upload, saves to GCS, kicks off job.
+
+/process → Pub/Sub push endpoint for chunk processing.
+
+/dev/process_once → local dev helper to process a chunk manually.
+
+/healthz → health check for Cloud Run.
+
+D. Implementation Notes
+
+Use pandas with chunked reading/writing to avoid memory overload.
+
+Use OpenAI Chat Completions (gpt-4o-mini or gpt-3.5-turbo) for cleaning + openers.
+
+Use BeautifulSoup (lxml) for scraping.
+
+Retry OpenAI + HTTP calls with tenacity (exponential backoff).
+
+Email via SMTP relay (e.g., SendGrid).
+
+
+
+Generate a Python project that automates processing a CSV (~10,000 rows) to clean names, verify company names, generate email openers, and send emails via SMTP. The system should be designed for deployment on Google Cloud Run and use Pub/Sub for chunk orchestration.
+
+Requirements:
+
+1. Input Data:
+- CSV file stored in Google Cloud Storage.
+- Columns: First Name, Last Name, Title, Company, Email, # Employees, Industry, Keywords, Person Linkedin Url, Website, Country, a1, a2, a3, Suitable Length, Opener.
+
+2. Output:
+- Cleaned names.
+- Verified company name scraped from website.
+- Two-sentence email opener per row.
+- Output CSV stored in GCS.
+
+3. Processing Logic:
+- Split input CSV into chunks of 50–100 rows per OpenAI API call.
+- Deduplicate repeated company names to reuse OpenAI outputs and reduce token usage.
+- Retry failed chunks up to 10 times. If still failing, send email with error logs.
+- Keep a job manifest in GCS to track processed chunks and errors for resuming mid-job.
+
+4. Infrastructure:
+- Cloud Run container (stateless).
+- Pub/Sub for chunk orchestration.
+- GCS for temporary storage of inputs, intermediate chunks, and outputs.
+- SMTP for sending emails (retry-safe, idempotent).
+
+5. Constraints:
+- OpenAI API: 3 requests per second for GPT-3.5.
+- Cloud Run timeout: default 15 min per container, can extend up to 60 min.
+- Memory/CPU: scale according to chunk size and scraping needs.
+
+6. Optional Features:
+- Resume processing from failures mid-chunk or mid-job.
+- Logging and monitoring of chunk progress.
+- Backpressure to respect OpenAI rate limits.
+- Cache repeated company lookups.
+
+7. Deployment:
+- Include Dockerfile ready for Cloud Run.
+- Include main.py that reads chunk from Pub/Sub, processes it, writes output to GCS, and sends emails.
+- Include requirements.txt with all necessary Python packages (fastapi, google-cloud-storage, google-cloud-pubsub, openai, requests, beautifulsoup4, etc.).
+- Ensure FastAPI app listens on 0.0.0.0 and uses PORT environment variable.
+
+8. Code Quality:
+- Modular code (functions/classes for scraping, OpenAI calls, email sending, chunk handling).
+- Exception handling and logging.
+- Comments explaining each step.

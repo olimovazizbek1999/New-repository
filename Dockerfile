@@ -1,21 +1,22 @@
-# ===== Build stage (optional, keeps runtime slim) =====
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+# Set environment
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
-# System deps for scientific stack + requests/ssl + uvicorn
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ca-certificates gnupg git \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
+
+# Copy requirements and install
+COPY requirements.txt .
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY . /app
+# Copy project files
+COPY . .
 
-# Expose for Cloud Run
-ENV PORT=8080
-CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT}
+# Expose Cloud Run port
+ENV PORT 8080
+EXPOSE 8080
+
+# Run FastAPI app
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
