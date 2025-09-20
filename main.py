@@ -1,122 +1,90 @@
-from __future__ import annotations
-
 import base64
-import json
-import os
-import uuid
-from typing import Optional
-
-import orjson
-import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, EmailStr
-from dotenv import load_dotenv
-
-# Load .env early
-load_dotenv()
-
-from services.gcs import GCSClient
-from services.processing import JobOrchestrator
-
-# Templates
-templates = Jinja2Templates(directory="templates")
-
-app = FastAPI(title="Lead Processor", version="1.0.0")
-
-def env(name: str, default: Optional[str] = None) -> str:
-    v = os.getenv(name, default)
-    if v is None:
-        raise RuntimeError(f"Missing required env var: {name}")
-    return v
-
-BUCKET = env("GCS_BUCKET", "")
-PUBSUB_TOPIC = os.getenv("PUBSUB_TOPIC", "")
+filename = file.filename or f"upload_{job_id}.csv"
+in_path = f"jobs/{job_id}/input/{filename}"
 
 
-# Health endpoint
-@app.get("/healthz")
-def healthz():
-    return {"status": "ok"}
+# Upload raw file to GCS
+content = await file.read()
+gcs.upload_bytes(GCS_BUCKET, in_path, content, content_type="text/csv")
+gcs_uri = f"gs://{GCS_BUCKET}/{in_path}"
 
 
-# Home form
-@app.get("/", response_class=HTMLResponse)
-async def form(request: Request):
-    return templates.TemplateResponse("form.html", {"request": request})
+# Create manifest
+manifest = processing.create_manifest_skeleton(job_id, gcs_uri, email)
+gcs.write_json(GCS_BUCKET, f"jobs/{job_id}/manifest.json", manifest)
 
 
-@app.post("/upload")
-async def upload(
-    request: Request,
-    file: UploadFile = File(...),
-    email: EmailStr = Form(...),
-):
-    if not BUCKET:
-        raise HTTPException(500, "Server not configured: missing GCS_BUCKET")
-
-    # Generate a job id
-    job_id = str(uuid.uuid4())
-    filename = file.filename or f"upload.csv"
-
-    gcs = GCSClient(bucket_name=BUCKET)
-
-    # Store input file to GCS
-    input_blob = f"jobs/{job_id}/input/{filename}"
-    await gcs.async_upload_stream(input_blob, await file.read())
-
-    # Create manifest
-    orchestrator = JobOrchestrator(gcs=gcs, pubsub_topic=PUBSUB_TOPIC)
-    total_rows, total_chunks = await orchestrator.create_manifest_and_plan(
-        job_id=job_id, gcs_input_blob=input_blob, notify_email=str(email)
-    )
-
-    # Kick off first chunk (Pub/Sub if available; else immediate)
-    await orchestrator.kickoff(job_id)
-
-    return JSONResponse(
-        {
-            "message": "Upload received; processing started.",
-            "job_id": job_id,
-            "rows": total_rows,
-            "chunks": total_chunks,
-            "manifest": f"gs://{BUCKET}/jobs/{job_id}/manifest.json",
-        }
-    )
+# Kick off first chunk
+try:
+total_rows, num_chunks = processing.initialize_job_stats(
+bucket=GCS_BUCKET, job_id=job_id, input_gcs_uri=gcs_uri
+)
+manifest.update({"total_rows": total_rows, "num_chunks": num_chunks})
+gcs.write_json(GCS_BUCKET, f"jobs/{job_id}/manifest.json", manifest)
 
 
-# Pub/Sub push endpoint (for chunk processing)
-class PubSubPush(BaseModel):
-    message: dict
-    subscription: Optional[str] = None
+if PUBSUB_TOPIC:
+processing.publish_next_chunk(job_id, 0)
+logger.info(f"Published chunk 0 for job {job_id}")
+else:
+# Fallback: process only first chunk synchronously
+logger.info("PUBSUB_TOPIC not set; processing first chunk synchronously")
+processing.process_chunk(GCS_BUCKET, job_id, 0)
+except Exception as e:
+logger.exception("Failed to start job")
+manifest.update({"status": "error", "error": str(e)})
+gcs.write_json(GCS_BUCKET, f"jobs/{job_id}/manifest.json", manifest)
+raise HTTPException(500, detail=f"Failed to start job: {e}")
 
 
-def _decode_pubsub_message(msg: dict) -> dict:
-    data_b64 = msg.get("data")
-    if not data_b64:
-        return {}
-    payload = base64.b64decode(data_b64).decode("utf-8")
-    return json.loads(payload)
+return RedirectResponse(url=f"/job/{job_id}", status_code=303)
+
+
+
+
+@app.get("/job/{job_id}")
+async def job_status(job_id: str):
+manifest = gcs.read_json(GCS_BUCKET, f"jobs/{job_id}/manifest.json")
+if not manifest:
+raise HTTPException(404, detail="Job not found")
+return JSONResponse(manifest)
+
+
 
 
 @app.post("/process")
-async def process_push(body: PubSubPush):
-    gcs = GCSClient(bucket_name=BUCKET)
-    orchestrator = JobOrchestrator(gcs=gcs, pubsub_topic=PUBSUB_TOPIC)
+async def process_pubsub(request: Request):
+"""
+Pub/Sub push endpoint. Accepts either:
+- {"message": {"data": base64(json.dumps({job_id, chunk_index}))}}
+- direct JSON: {"job_id":..., "chunk_index":...}
+"""
+body = await request.json()
+try:
+if "message" in body and body["message"].get("data"):
+payload = json.loads(base64.b64decode(body["message"]["data"]))
+else:
+payload = body
+job_id = payload["job_id"]
+chunk_index = int(payload["chunk_index"])
+except Exception as e:
+raise HTTPException(400, detail=f"Invalid message: {e}")
 
-    data = _decode_pubsub_message(body.message)
-    if not data:
-        raise HTTPException(400, "Invalid Pub/Sub message")
 
-    await orchestrator.process_chunk(**data)
-    return {"status": "processed", "chunk": data.get("chunk_index")}
+try:
+processing.process_chunk(GCS_BUCKET, job_id, chunk_index)
+except Exception as e:
+logger.exception("Chunk processing failed")
+raise HTTPException(500, detail=str(e))
 
 
-# Local dev helper
+return {"status": "ok"}
+
+
+
+
 @app.post("/dev/process_once")
-async def dev_process_once(payload: dict):
-    gcs = GCSClient(bucket_name=BUCKET)
-    orchestrator = JobOrchestrator(gcs=gcs, pubsub_topic=PUBSUB_TOPIC)
-    await orchestrator.process_chunk(**payload)
-    return {"status": "ok"}
+async def process_once(job_id: str, chunk_index: int = 0):
+"""Local/dev helper to process one chunk synchronously."""
+processing.process_chunk(GCS_BUCKET, job_id, chunk_index)
+return {"status": "ok", "job_id": job_id, "chunk_index": chunk_index}

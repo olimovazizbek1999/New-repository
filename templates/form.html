@@ -1,19 +1,31 @@
-<!-- D:\MyProject\templates\form.html -->
-<!DOCTYPE html>
+<!doctype html>
 <html>
 <head>
-    <title>CSV Lead Processor</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Lead Processor</title>
+<style>
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+form { max-width: 520px; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 12px; }
+label { display:block; margin:.5rem 0 .25rem; font-weight:600; }
+input[type="email"], input[type="file"] { width:100%; padding:.5rem; }
+button { margin-top:1rem; padding:.6rem 1rem; border:0; background:black; color:white; border-radius:8px; }
+.hint { color:#6b7280; font-size:.9rem; }
+</style>
 </head>
 <body>
-    <h2>Upload your CSV</h2>
-    <form action="/upload" method="post" enctype="multipart/form-data">
-        <label for="file">Choose CSV:</label>
-        <input type="file" id="file" name="file" accept=".csv" required><br><br>
+<h1>Upload leads CSV</h1>
+<p class="hint">CSV headers required: First Name, Last Name, Title, Company, Email, # Employees, Industry, Keywords, Person Linkedin Url, Website, Country, a1, a2, a3, Suitable Length, Opener</p>
+<form action="/upload" method="post" enctype="multipart/form-data">
+<label for="file">CSV file</label>
+<input type="file" id="file" name="file" accept=".csv" required />
 
-        <label for="email">Your Email:</label>
-        <input type="email" id="email" name="email" required><br><br>
 
-        <button type="submit">Upload & Process</button>
-    </form>
+<label for="email">Your email</label>
+<input type="email" id="email" name="email" placeholder="you@company.com" required />
+
+
+<button type="submit">Start processing</button>
+</form>
 </body>
 </html>
