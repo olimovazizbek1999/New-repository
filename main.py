@@ -1,16 +1,13 @@
 import os
-from flask import Flask
+from fastapi import FastAPI
+import uvicorn
 
-app = Flask(__name__)
-
+app = FastAPI()
 PORT = int(os.environ.get("PORT", 8080))
 
-@app.route("/")
-def hello():
-    return "Hello, Cloud Run!"
+@app.get("/")
+def read_root():
+    return {"message": "Hello, Cloud Run!"}
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
-
-
-print("hello   111")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
