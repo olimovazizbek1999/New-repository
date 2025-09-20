@@ -1,0 +1,89 @@
+Build a Python-based FastAPI web application deployed on Google Cloud Run that processes lead data stored in CSV files, applies AI-powered cleaning and enrichment, and delivers the processed CSV back to clients via email.
+
+Input & Upload
+
+The web interface should allow clients to:
+
+Upload a CSV file (input format: columns A–O).
+
+Enter their email address in a form field.
+
+The uploaded file must be saved to Google Cloud Storage (GCS).
+
+Processing Requirements
+
+Process only inside the uploaded CSV (columns A–O).
+
+Columns A–O should remain untouched, except:
+
+Column A (First Name), B (Last Name), and D (Company Name):
+
+Clean with OpenAI API (remove whitespace and irrelevant characters).
+
+Column J (Company Website URL):
+
+If a URL exists, fetch homepage, extract visible company name, and overwrite column D.
+
+Column P (New Column):
+
+Generate a two-sentence email opener using OpenAI API, based only on visible homepage text.
+
+Email Opener Rules:
+
+Style: professional, calm, specific.
+
+Tone: neutral-positive (no hype, emojis, or questions).
+
+Content: only from visible text (no assumptions about size, funding, or location).
+
+Structure: exactly 2 sentences, 10–18 words each.
+
+Flow: second sentence must follow naturally and end cleanly (no sales pitch).
+
+Batch & Chunking
+
+CSVs may contain millions of rows.
+
+Process in chunks of ~10,000 rows per job (to fit Cloud Run’s 15-minute execution limit).
+
+Within each job (in Python):
+
+Cleaning API calls (First/Last/Company Name): send 50–100 rows per request to OpenAI API.
+
+Opener generation API calls (Column P): send 10–20 rows per request to OpenAI API.
+
+Each chunk saves results back to GCS and automatically schedules the next chunk until all are processed.
+
+Output & Delivery
+
+When all chunks are processed, merge into a final output CSV using Python.
+
+Store processed CSV in GCS (e.g., gs://bucket/output/file_processed.csv).
+
+Generate a signed download link (valid for 7 days).
+
+Automatically send an email notification:
+
+To the client (email they entered).
+
+CC to olimovazizbek1999@gmail.com.
+
+Email contains the download link only (no attachment).
+
+Error Handling & Monitoring
+
+Log progress and errors in execution logs.
+
+If a row fails, skip gracefully and continue.
+
+Ensure partial results are always saved so no data is lost if job restarts.
+
+👉 Deliver a complete Python FastAPI web app with:
+
+Web form (file upload + email input).
+
+Processing pipeline with OpenAI + website scraping.
+
+Integration with Google Cloud Run + Google Cloud Storage.
+
+Automatic email notifications with signed download links.
