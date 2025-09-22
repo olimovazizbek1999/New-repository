@@ -3,3 +3,4 @@ keys/*.json
 # Ignore keys and secrets
 keys/
 .env
+cloudrun-env.yaml
