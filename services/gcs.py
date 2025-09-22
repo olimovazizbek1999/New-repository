@@ -1,93 +1,101 @@
-import io
-import json
-import logging
 import os
-import tempfile
-from datetime import timedelta
-from typing import Dict, List, Optional
-
+import datetime
+import pandas as pd
 from google.cloud import storage
+from google.auth import default, impersonated_credentials
 
-logger = logging.getLogger(__name__)
+# Read env vars
+SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 
-def _client():
-    return storage.Client()
+# Initialize default client (will be overridden if impersonation is needed)
+_default_client = storage.Client()
 
-def upload_bytes(bucket: str, path: str, data: bytes, content_type: str = "application/octet-stream"):
-    b = _client().bucket(bucket).blob(path)
-    b.upload_from_string(data, content_type=content_type)
-    logger.info(f"Uploaded gs://{bucket}/{path} ({len(data)} bytes)")
 
-def upload_fileobj(bucket: str, path: str, fileobj, content_type: str | None = None):
-    b = _client().bucket(bucket).blob(path)
-    b.upload_from_file(fileobj, rewind=True, content_type=content_type)
-    logger.info(f"Uploaded gs://{bucket}/{path}")
+def upload_file(bucket_name, path, local_path):
+    """Upload a local file to GCS."""
+    bucket = _default_client.bucket(bucket_name)
+    blob = bucket.blob(path)
+    blob.upload_from_filename(local_path)
+    return f"gs://{bucket_name}/{path}"
 
-def download_to_tempfile(bucket: str, path: str) -> str:
-    b = _client().bucket(bucket).blob(path)
-    if not b.exists():
-        raise FileNotFoundError(f"gs://{bucket}/{path} not found")
-    fd, temp_path = tempfile.mkstemp()
-    os.close(fd)
-    b.download_to_filename(temp_path)
-    return temp_path
 
-def write_json(bucket: str, path: str, obj: Dict):
-    data = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
-    upload_bytes(bucket, path, data, content_type="application/json")
+def upload_bytes(bucket_name, path, data: bytes):
+    """Upload raw bytes to GCS."""
+    bucket = _default_client.bucket(bucket_name)
+    blob = bucket.blob(path)
+    blob.upload_from_string(data)
+    return f"gs://{bucket_name}/{path}"
 
-def read_json(bucket: str, path: str) -> Optional[Dict]:
-    b = _client().bucket(bucket).blob(path)
-    if not b.exists():
-        return None
-    s = b.download_as_text()
-    return json.loads(s)
 
-def list_paths(bucket: str, prefix: str) -> List[str]:
-    blobs = _client().bucket(bucket).list_blobs(prefix=prefix)
-    return [bl.name for bl in blobs]
+def download_file(bucket_name, path, local_path):
+    """Download GCS file to local path."""
+    bucket = _default_client.bucket(bucket_name)
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{path} not found")
+    blob.download_to_filename(local_path)
+    return local_path
 
-def generate_signed_url(bucket: str, path: str, days: int = 7) -> str:
-    blob = _client().bucket(bucket).blob(path)
-    url = blob.generate_signed_url(expiration=timedelta(days=days), method="GET")
-    return url
 
-def write_df_csv(bucket: str, path: str, df, include_header: bool = True):
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    df.to_csv(tmp.name, index=False, header=include_header)
-    with open(tmp.name, "rb") as f:
-        upload_fileobj(bucket, path, f, content_type="text/csv")
+def download_bytes(bucket_name, path):
+    """Download GCS file contents as bytes."""
+    bucket = _default_client.bucket(bucket_name)
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise FileNotFoundError(f"gs://{bucket_name}/{path} not found")
+    return blob.download_as_bytes()
 
-def merge_chunks_to_final(bucket: str, job_id: str, original_filename: str) -> str:
-    out_prefix = f"jobs/{job_id}/out/"
-    chunk_paths = sorted(
-        [p for p in list_paths(bucket, out_prefix) if p.endswith(".csv")],
-        key=lambda p: int(p.split("chunk_")[-1].split(".")[0]),
-    )
-    if not chunk_paths:
-        raise RuntimeError("No chunk outputs found to merge")
 
-    header_written = False
-    merged_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    for p in chunk_paths:
-        tmp = download_to_tempfile(bucket, p)
-        with open(tmp, "rb") as f_in:
-            data = f_in.read()
-        text = data.decode("utf-8", errors="ignore")
-        lines = text.splitlines()
-        if not lines:
+def merge_csvs(bucket_name, input_paths, output_path):
+    """Merge multiple CSV files in GCS into one final CSV."""
+    frames = []
+    for p in input_paths:
+        bucket = _default_client.bucket(bucket_name)
+        blob = bucket.blob(p)
+        if not blob.exists():
             continue
-        if header_written:
-            content = "\n".join(lines[1:]) + "\n"
-        else:
-            content = "\n".join(lines) + "\n"
-            header_written = True
-        with open(merged_tmp.name, "ab") as f_out:
-            f_out.write(content.encode("utf-8"))
+        data = blob.download_as_bytes()
+        df = pd.read_csv(pd.io.common.BytesIO(data))
+        frames.append(df)
 
-    final_name = original_filename.rsplit(".", 1)[0] + "_processed.csv"
-    final_path = f"jobs/{job_id}/final/{final_name}"
-    with open(merged_tmp.name, "rb") as f:
-        upload_fileobj(bucket, final_path, f, content_type="text/csv")
-    logger.info(f"Merged {len(chunk_paths)} chunks into gs://{bucket}/{final_path}")
-    return final_path
+    if not frames:
+        raise ValueError("No CSVs found to merge")
+
+    merged = pd.concat(frames)
+    bucket = _default_client.bucket(bucket_name)
+    blob = bucket.blob(output_path)
+    blob.upload_from_string(merged.to_csv(index=False), content_type="text/csv")
+    return f"gs://{bucket_name}/{output_path}"
+
+
+def generate_signed_url(bucket_name, blob_name, expiration=3600):
+    """
+    Generate a V4 signed URL for a blob inside Cloud Run.
+    Requires roles:
+      - roles/storage.objectAdmin
+      - roles/iam.serviceAccountTokenCreator
+    """
+
+    creds, _ = default()
+
+    if SERVICE_ACCOUNT_EMAIL:
+        # Impersonate the service account to get signing power
+        target_creds = impersonated_credentials.Credentials(
+            source_credentials=creds,
+            target_principal=SERVICE_ACCOUNT_EMAIL,
+            target_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            lifetime=3600,
+        )
+        client = storage.Client(credentials=target_creds)
+    else:
+        client = _default_client
+
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    url = blob.generate_signed_url(
+        version="v4",
+        expiration=datetime.timedelta(seconds=expiration),
+        method="GET",
+    )
+    return url

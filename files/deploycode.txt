@@ -1,0 +1,17 @@
+*****Deploy command******
+
+gcloud run deploy lead-processor `
+  --source . `
+  --region us-central1 `
+  --platform managed `
+  --allow-unauthenticated `
+  --env-vars-file cloudrun-env.yaml
+
+
+************Check job by its ID*******************
+
+https://lead-processor-493590288221.us-central1.run.app/job/<Job-ID>
+
+********************************************
+
+https://lead-processor-493590288221.us-central1.run.app
