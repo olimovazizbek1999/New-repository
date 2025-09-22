@@ -67,8 +67,13 @@ async def process_chunk(job_id, chunk_index):
         start = chunk_index * chunk_size
         end = min(start + chunk_size, total_rows)
         chunk = df.iloc[start:end].copy()
+        chunk = chunk.fillna("")
 
-        # ✅ FIX: Ensure Company column is string type
+
+        # ✅ Fix 1: Fill NaN values to prevent NAType JSON errors
+        chunk = chunk.fillna("")
+
+        # ✅ Fix 2: Ensure Company column is string type
         if "Company" in chunk.columns:
             chunk["Company"] = chunk["Company"].astype("string")
 
@@ -177,4 +182,4 @@ def finalize_job(job_id, manifest=None):
     except Exception as e:
         log_event(manifest, f"finalize error: {e}")
         manifest["status"] = "error"
-        save_manisest(job_id, manifest)
+        save_manifest(job_id, manifest)

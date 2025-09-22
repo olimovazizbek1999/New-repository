@@ -1,5 +1,6 @@
 GCS_BUCKET: "ollie-data-cleaning_cloudbuild"
 PUBSUB_TOPIC: "projects/ollie-data-cleaning/topics/lead-processor-jobs"
+SERVICE_ACCOUNT_EMAIL: "493590288221-compute@developer.gserviceaccount.com"
 OPENAI_API_KEY: "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"
 SMTP_HOST: "smtp.gmail.com"
 SMTP_PORT: "587"

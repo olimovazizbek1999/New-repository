@@ -4,10 +4,10 @@ import pandas as pd
 from google.cloud import storage
 from google.auth import default, impersonated_credentials
 
-# Read env vars
+# Read service account email from env
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 
-# Initialize default client (will be overridden if impersonation is needed)
+# Default client
 _default_client = storage.Client()
 
 
@@ -16,6 +16,7 @@ def upload_file(bucket_name, path, local_path):
     bucket = _default_client.bucket(bucket_name)
     blob = bucket.blob(path)
     blob.upload_from_filename(local_path)
+    print(f"Uploaded gs://{bucket_name}/{path}")
     return f"gs://{bucket_name}/{path}"
 
 
@@ -24,6 +25,7 @@ def upload_bytes(bucket_name, path, data: bytes):
     bucket = _default_client.bucket(bucket_name)
     blob = bucket.blob(path)
     blob.upload_from_string(data)
+    print(f"Uploaded gs://{bucket_name}/{path}")
     return f"gs://{bucket_name}/{path}"
 
 
@@ -65,21 +67,21 @@ def merge_csvs(bucket_name, input_paths, output_path):
     bucket = _default_client.bucket(bucket_name)
     blob = bucket.blob(output_path)
     blob.upload_from_string(merged.to_csv(index=False), content_type="text/csv")
+    print(f"Merged {len(frames)} chunks into gs://{bucket_name}/{output_path}")
     return f"gs://{bucket_name}/{output_path}"
 
 
 def generate_signed_url(bucket_name, blob_name, expiration=3600):
     """
     Generate a V4 signed URL for a blob inside Cloud Run.
-    Requires roles:
+    Requires:
       - roles/storage.objectAdmin
       - roles/iam.serviceAccountTokenCreator
     """
-
     creds, _ = default()
 
+    # ✅ Use impersonated service account if provided
     if SERVICE_ACCOUNT_EMAIL:
-        # Impersonate the service account to get signing power
         target_creds = impersonated_credentials.Credentials(
             source_credentials=creds,
             target_principal=SERVICE_ACCOUNT_EMAIL,
@@ -98,4 +100,5 @@ def generate_signed_url(bucket_name, blob_name, expiration=3600):
         expiration=datetime.timedelta(seconds=expiration),
         method="GET",
     )
+    print(f"Generated signed URL for gs://{bucket_name}/{blob_name}")
     return url

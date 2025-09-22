@@ -58,7 +58,7 @@ async def upload_file(request: Request, file: UploadFile = Form(...), email: str
         "created_at": str(processing.utcnow()),
         "updated_at": str(processing.utcnow()),
         "total_rows": None,
-        "chunk_size": 1000,  # ✅ now default 1000 rows per chunk
+        "chunk_size": 100,  # ✅ smaller chunks
         "num_chunks": None,
         "processed_chunks": [],
         "error_chunks": [],
@@ -88,10 +88,10 @@ async def process_pubsub(request: Request):
 
     print(f"⚙️ Received job {job_id}, chunk {chunk_index} → scheduling in background")
 
-    # Schedule chunk processing in the background
+    # ✅ Run processing asynchronously (don’t block response)
     asyncio.create_task(processing.process_chunk(job_id, chunk_index))
 
-    # Immediately ack Pub/Sub so it doesn’t retry
+    # ✅ Immediately ack Pub/Sub
     return {"status": "ok"}
 
 
