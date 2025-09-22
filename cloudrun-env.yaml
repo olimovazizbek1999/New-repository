@@ -1,0 +1,7 @@
+GCS_BUCKET: "ollie-data-cleaning_cloudbuild"
+OPENAI_API_KEY: "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"
+SMTP_HOST: "smtp.gmail.com"
+SMTP_PORT: "587"
+SMTP_USER: "uztrucks@gmail.com"
+SMTP_PASS: "Uzt80s122fa"
+SMTP_FROM: "uztrucks@gmail.com"
