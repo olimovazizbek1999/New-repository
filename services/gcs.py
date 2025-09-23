@@ -7,41 +7,30 @@ from google.auth import default, impersonated_credentials
 # Read service account email from env
 SERVICE_ACCOUNT_EMAIL = os.environ.get("SERVICE_ACCOUNT_EMAIL")
 
-# Default client
-_default_client = storage.Client()
+# Lazy client
+_default_client = None
 
 
-def upload_file(bucket_name, path, local_path):
-    """Upload a local file to GCS."""
-    bucket = _default_client.bucket(bucket_name)
-    blob = bucket.blob(path)
-    blob.upload_from_filename(local_path)
-    print(f"Uploaded gs://{bucket_name}/{path}")
-    return f"gs://{bucket_name}/{path}"
+def get_client():
+    """Return a cached Google Cloud Storage client."""
+    global _default_client
+    if _default_client is None:
+        _default_client = storage.Client()
+    return _default_client
 
 
 def upload_bytes(bucket_name, path, data: bytes):
     """Upload raw bytes to GCS."""
-    bucket = _default_client.bucket(bucket_name)
+    bucket = get_client().bucket(bucket_name)
     blob = bucket.blob(path)
     blob.upload_from_string(data)
     print(f"Uploaded gs://{bucket_name}/{path}")
     return f"gs://{bucket_name}/{path}"
 
 
-def download_file(bucket_name, path, local_path):
-    """Download GCS file to local path."""
-    bucket = _default_client.bucket(bucket_name)
-    blob = bucket.blob(path)
-    if not blob.exists():
-        raise FileNotFoundError(f"gs://{bucket_name}/{path} not found")
-    blob.download_to_filename(local_path)
-    return local_path
-
-
 def download_bytes(bucket_name, path):
     """Download GCS file contents as bytes."""
-    bucket = _default_client.bucket(bucket_name)
+    bucket = get_client().bucket(bucket_name)
     blob = bucket.blob(path)
     if not blob.exists():
         raise FileNotFoundError(f"gs://{bucket_name}/{path} not found")
@@ -52,7 +41,7 @@ def merge_csvs(bucket_name, input_paths, output_path):
     """Merge multiple CSV files in GCS into one final CSV."""
     frames = []
     for p in input_paths:
-        bucket = _default_client.bucket(bucket_name)
+        bucket = get_client().bucket(bucket_name)
         blob = bucket.blob(p)
         if not blob.exists():
             continue
@@ -64,7 +53,7 @@ def merge_csvs(bucket_name, input_paths, output_path):
         raise ValueError("No CSVs found to merge")
 
     merged = pd.concat(frames)
-    bucket = _default_client.bucket(bucket_name)
+    bucket = get_client().bucket(bucket_name)
     blob = bucket.blob(output_path)
     blob.upload_from_string(merged.to_csv(index=False), content_type="text/csv")
     print(f"Merged {len(frames)} chunks into gs://{bucket_name}/{output_path}")
@@ -74,7 +63,7 @@ def merge_csvs(bucket_name, input_paths, output_path):
 def generate_signed_url(bucket_name, blob_name, expiration=3600):
     """
     Generate a V4 signed URL for a blob inside Cloud Run.
-    Requires:
+    Requires roles:
       - roles/storage.objectAdmin
       - roles/iam.serviceAccountTokenCreator
     """
@@ -90,7 +79,7 @@ def generate_signed_url(bucket_name, blob_name, expiration=3600):
         )
         client = storage.Client(credentials=target_creds)
     else:
-        client = _default_client
+        client = get_client()
 
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)

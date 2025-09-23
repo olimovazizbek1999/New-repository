@@ -1,88 +1,97 @@
 import os
 import json
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from openai import OpenAI
+from typing import List, Dict
+import asyncio
+from openai import AsyncOpenAI
 
-# Load OpenAI client
-_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-
-class OpenAIError(Exception):
-    """Custom error wrapper for OpenAI issues"""
-    pass
+_client = None
+_semaphore = asyncio.Semaphore(5)  # limit concurrent API calls
 
 
-# 🔹 Retry wrapper for resiliency
-def _retry_decorator(func):
-    return retry(
-        reraise=True,
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-    )(func)
+def get_client() -> AsyncOpenAI:
+    """Lazy-load async OpenAI client."""
+    global _client
+    if _client is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY environment variable is not set")
+        _client = AsyncOpenAI(api_key=api_key)
+    return _client
 
 
-@_retry_decorator
-def clean_rows(rows):
+async def clean_rows(rows: List[Dict], job_id=None) -> List[Dict]:
     """
-    Cleans names and company fields using OpenAI.
-    Input: list of dicts, e.g. [{"first":" John ", "last":"Doe", "company":"Acme"}]
-    Output: JSON string with cleaned values
+    Clean first/last/company fields using OpenAI (async).
+    Batches of 100 rows.
     """
-    response = _client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a data cleaning assistant. "
-                    "Always reply strictly in valid JSON."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "Clean the following rows (trim whitespace, remove symbols). "
-                    "Return output strictly as JSON array with the same keys.\n\n"
-                    + json.dumps(rows)
-                ),
-            },
-        ],
-        response_format={"type": "json_object"},
-    )
+    client = get_client()
+    results: List[Dict] = []
 
-    return response.choices[0].message.content
+    async def _clean_batch(batch):
+        prompt = (
+            "You are a data cleaner. Normalize personal names and company names.\n"
+            "- Remove symbols like &!@^#$.\n"
+            "- Trim whitespace.\n"
+            "- Preserve capitalization (Hans-Josef Schiffers).\n"
+            "Return JSON list with objects {first,last,company}.\n\n"
+            f"Rows: {json.dumps(batch)}"
+        )
+        async with _semaphore:
+            resp = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+        try:
+            content = resp.choices[0].message.content
+            parsed = json.loads(content)
+            return parsed.get("rows", batch)
+        except Exception as e:
+            print(f"⚠️ clean_rows batch error: {e}")
+            return batch
+
+    tasks = [_clean_batch(rows[i:i+100]) for i in range(0, len(rows), 100)]
+    for batch_result in await asyncio.gather(*tasks):
+        results.extend(batch_result)
+
+    return results
 
 
-@_retry_decorator
-def generate_openers(rows):
+async def generate_openers(rows: List[Dict], job_id=None) -> List[Dict]:
     """
-    Generates professional two-sentence openers.
-    Input: list of dicts, each with company website text etc.
-    Output: JSON string with added 'opener' key.
+    Generate professional two-sentence openers (async).
+    Batches of 20 rows.
     """
-    response = _client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an assistant that generates professional, calm, specific email openers. "
-                    "You must always respond in valid JSON."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "For each row, generate a two-sentence email opener. "
-                    "Style: professional, calm, neutral-positive. "
-                    "Length: each sentence 10–18 words. "
-                    "Second sentence must flow naturally and end cleanly (no sales pitch). "
-                    "Return output strictly as JSON array with the same keys plus an 'opener' field.\n\n"
-                    + json.dumps(rows)
-                ),
-            },
-        ],
-        response_format={"type": "json_object"},
-    )
+    client = get_client()
+    results: List[Dict] = []
 
-    return response.choices[0].message.content
+    async def _gen_batch(batch):
+        prompt = (
+            "You are a B2B sales assistant.\n"
+            "For each row, generate a professional email opener from homepage text.\n"
+            "- Style: professional, calm.\n"
+            "- Tone: neutral-positive, no hype, no emojis, no questions.\n"
+            "- Exactly 2 sentences, each 10–18 words.\n"
+            "- Second sentence must follow naturally, no sales pitch.\n"
+            "Return JSON list with objects {opener}.\n\n"
+            f"Rows: {json.dumps(batch)}"
+        )
+        async with _semaphore:
+            resp = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+        try:
+            content = resp.choices[0].message.content
+            parsed = json.loads(content)
+            return parsed.get("rows", [{"opener": "No opener generated"} for _ in batch])
+        except Exception as e:
+            print(f"⚠️ generate_openers batch error: {e}")
+            return [{"opener": "No opener generated"} for _ in batch]
+
+    tasks = [_gen_batch(rows[i:i+20]) for i in range(0, len(rows), 20)]
+    for batch_result in await asyncio.gather(*tasks):
+        results.extend(batch_result)
+
+    return results

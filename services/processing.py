@@ -2,80 +2,70 @@ import os
 import io
 import json
 import pandas as pd
+import logging
+import asyncio
 from datetime import datetime, timezone
-from services import gcs, openai_utils, emailer, scraper
-from .openai_utils import clean_rows, generate_openers
+from services import gcs
+from .openai_utils import clean_rows, generate_openers   # now async
 from .emailer import send_email
-from .scraper import extract_company_name
+from .scraper import extract_company_info                # async httpx version
 from google.cloud import pubsub_v1
 
-# Env vars
+# Logging
+logger = logging.getLogger("services.processing")
+logger.setLevel(logging.INFO)
+
 BUCKET = os.environ.get("GCS_BUCKET")
 PUBSUB_TOPIC = os.environ.get("PUBSUB_TOPIC")
 
-# Publisher for chaining chunks
 _publisher = pubsub_v1.PublisherClient() if PUBSUB_TOPIC else None
 
 
 def utcnow():
-    """Get current UTC time (ISO format)."""
     return datetime.now(timezone.utc)
 
 
 def log_event(manifest, msg):
-    """Append event log entry to manifest dict."""
     manifest["log"].append({"time": str(utcnow()), "msg": msg})
     manifest["updated_at"] = str(utcnow())
+    logger.info(msg)
 
 
 def load_manifest(job_id):
-    """Load job manifest from GCS."""
     data = gcs.download_bytes(BUCKET, f"jobs/{job_id}/manifest.json")
     return json.loads(data.decode("utf-8"))
 
 
 def save_manifest(job_id, manifest):
-    """Save job manifest to GCS."""
-    gcs.upload_bytes(BUCKET, f"jobs/{job_id}/manifest.json", json.dumps(manifest).encode("utf-8"))
+    gcs.upload_bytes(
+        BUCKET,
+        f"jobs/{job_id}/manifest.json",
+        json.dumps(manifest).encode("utf-8"),
+    )
 
 
 async def process_chunk(job_id, chunk_index):
-    """
-    Process a chunk of the job:
-      - Read input file
-      - Clean names & company
-      - Scrape company name
-      - Generate email openers
-      - Save chunk
-      - Enqueue next chunk or finalize
-    """
     manifest = load_manifest(job_id)
     log_event(manifest, f"Processing chunk {chunk_index}")
 
+    cleaned_count = 0
+    opener_count = 0
+
     try:
-        # Load full CSV
+        # Load CSV
         input_path = manifest["input"].replace(f"gs://{BUCKET}/", "")
         data = gcs.download_bytes(BUCKET, input_path)
         df = pd.read_csv(io.BytesIO(data))
 
         total_rows = len(df)
         manifest["total_rows"] = total_rows
-        chunk_size = manifest.get("chunk_size", 1000)  # default = 1000
+        chunk_size = manifest.get("chunk_size", 1000)
         num_chunks = (total_rows + chunk_size - 1) // chunk_size
         manifest["num_chunks"] = num_chunks
 
         start = chunk_index * chunk_size
         end = min(start + chunk_size, total_rows)
-        chunk = df.iloc[start:end].copy()
-        chunk = chunk.fillna("")
-
-
-        # ✅ Fix 1: Fill NaN values to prevent NAType JSON errors
-        chunk = chunk.fillna("")
-
-        # ✅ Fix 2: Ensure Company column is string type
-        if "Company" in chunk.columns:
-            chunk["Company"] = chunk["Company"].astype("string")
+        chunk = df.iloc[start:end].copy().fillna("")
 
         if chunk.empty:
             log_event(manifest, f"Chunk {chunk_index} empty, marking processed")
@@ -83,49 +73,77 @@ async def process_chunk(job_id, chunk_index):
             save_manifest(job_id, manifest)
             return
 
-        # Clean names/companies with OpenAI
-        rows = [
-            {"first": r["First Name"], "last": r["Last Name"], "company": r["Company"]}
-            for _, r in chunk.iterrows()
-        ]
+        # Ensure required columns exist
+        for col in ["First Name", "Last Name", "Company", "Opener"]:
+            if col not in chunk.columns:
+                chunk[col] = "" if col != "Opener" else "No opener generated"
+
+        # --- CLEAN ROWS (async OpenAI) ---
         try:
-            cleaned = json.loads(clean_rows(rows))
+            rows = [
+                {"first": r["First Name"], "last": r["Last Name"], "company": r["Company"]}
+                for _, r in chunk.iterrows()
+            ]
+            cleaned = await clean_rows(rows, job_id)
+
             for i, c in enumerate(cleaned):
-                chunk.iloc[i, chunk.columns.get_loc("First Name")] = c["first"]
-                chunk.iloc[i, chunk.columns.get_loc("Last Name")] = c["last"]
-                chunk.iloc[i, chunk.columns.get_loc("Company")] = c["company"]
+                if i < len(chunk):
+                    chunk.at[chunk.index[i], "First Name"] = c.get("first", "") or "Unknown"
+                    chunk.at[chunk.index[i], "Last Name"] = c.get("last", "") or "Unknown"
+                    chunk.at[chunk.index[i], "Company"] = c.get("company", "") or "Unknown"
+                    cleaned_count += 1
+            log_event(manifest, f"Applied cleaning to {cleaned_count} rows")
         except Exception as e:
-            log_event(manifest, f"clean error: {e}")
+            log_event(manifest, f"⚠️ OpenAI clean_rows failed: {e}")
 
-        # Scrape website & override company if available
+        # --- SCRAPE WEBSITES (async httpx) ---
         if "Website" in chunk.columns:
-            for idx, row in chunk.iterrows():
-                if pd.notna(row["Website"]):
-                    try:
-                        company_name = extract_company_name(row["Website"])
-                        if company_name:
-                            chunk.at[idx, "Company"] = company_name
-                    except Exception as e:
-                        log_event(manifest, f"scrape error {row['Website']}: {e}")
+            scrape_tasks = [
+                extract_company_info(row["Website"])
+                for idx, row in chunk.iterrows() if row.get("Website")
+            ]
+            results = await asyncio.gather(*scrape_tasks, return_exceptions=True)
 
-        # Generate openers with OpenAI
-        rows = [
-            {"company": r["Company"], "website": r.get("Website", ""), "industry": r.get("Industry", "")}
-            for _, r in chunk.iterrows()
-        ]
+            for (idx, row), info in zip(chunk.iterrows(), results):
+                if isinstance(info, dict):
+                    if info.get("name"):
+                        chunk.at[idx, "Company"] = info["name"]
+                    chunk.at[idx, "ScrapedText"] = info.get("text", "")
+                else:
+                    log_event(manifest, f"scrape error {row['Website']}: {info}")
+                    chunk.at[idx, "ScrapedText"] = ""
+
+        # --- GENERATE OPENERS (async OpenAI) ---
         try:
-            opened = json.loads(generate_openers(rows))
-            for i, o in enumerate(opened):
-                chunk.loc[chunk.index[i], "Opener"] = o["opener"]
-        except Exception as e:
-            log_event(manifest, f"opener error: {e}")
+            rows = [
+                {
+                    "company": r.get("Company", ""),
+                    "website": r.get("Website", ""),
+                    "industry": r.get("Industry", ""),
+                    "text": r.get("ScrapedText", ""),
+                }
+                for _, r in chunk.iterrows()
+            ]
+            opened = await generate_openers(rows, job_id)
 
-        # Save processed chunk
+            for i, o in enumerate(opened):
+                if i < len(chunk):
+                    chunk.at[chunk.index[i], "Opener"] = (
+                        o.get("opener", "") or "No opener generated"
+                    )
+                    opener_count += 1
+            log_event(manifest, f"Applied openers to {opener_count} rows")
+        except Exception as e:
+            log_event(manifest, f"⚠️ OpenAI generate_openers failed: {e}")
+
+        # Drop ScrapedText before saving
+        if "ScrapedText" in chunk.columns:
+            chunk = chunk.drop(columns=["ScrapedText"])
+
         out_path = f"jobs/{job_id}/out/chunk_{chunk_index}.csv"
         gcs.upload_bytes(BUCKET, out_path, chunk.to_csv(index=False).encode("utf-8"))
         log_event(manifest, f"Saved chunk {chunk_index} → {out_path}")
 
-        # Mark processed
         manifest["processed_chunks"].append(chunk_index)
         save_manifest(job_id, manifest)
 
@@ -136,7 +154,6 @@ async def process_chunk(job_id, chunk_index):
                 json.dumps({"job_id": job_id, "chunk_index": chunk_index + 1}).encode("utf-8"),
             )
             log_event(manifest, f"Enqueued next chunk {chunk_index+1}")
-            save_manifest(job_id, manifest)
         elif chunk_index + 1 == num_chunks:
             finalize_job(job_id, manifest)
 
@@ -147,27 +164,31 @@ async def process_chunk(job_id, chunk_index):
 
 
 def finalize_job(job_id, manifest=None):
-    """Merge chunks, generate signed URL, send email."""
     if manifest is None:
         manifest = load_manifest(job_id)
 
     try:
-        # Merge chunks
         input_paths = [f"jobs/{job_id}/out/chunk_{i}.csv" for i in manifest["processed_chunks"]]
         final_path = f"jobs/{job_id}/final/{manifest['filename'].replace('.csv', '_processed.csv')}"
         gcs.merge_csvs(BUCKET, input_paths, final_path)
         manifest["final_gcs_path"] = f"gs://{BUCKET}/{final_path}"
         log_event(manifest, f"Merged chunks → {final_path}")
 
-        # Signed URL
+        # Remove ScrapedText column if present
+        data = gcs.download_bytes(BUCKET, final_path)
+        df = pd.read_csv(io.BytesIO(data))
+        if "ScrapedText" in df.columns:
+            df = df.drop(columns=["ScrapedText"])
+            gcs.upload_bytes(BUCKET, final_path, df.to_csv(index=False).encode("utf-8"))
+            log_event(manifest, "Removed internal ScrapedText column from final CSV")
+
         signed_url = gcs.generate_signed_url(BUCKET, final_path, expiration=7 * 24 * 3600)
         manifest["final_signed_url"] = signed_url
-        log_event(manifest, f"Generated signed URL")
+        log_event(manifest, "Generated signed URL")
 
-        # Email
         email_body = f"Download link (valid 7 days):\n\n{signed_url}"
         send_email(
-            to_addr=manifest["email"],
+            to=manifest["email"],
             subject="Your processed CSV is ready",
             body=email_body,
             cc=["olimovazizbek1999@gmail.com"],
@@ -175,8 +196,11 @@ def finalize_job(job_id, manifest=None):
         manifest["email_sent"] = True
         log_event(manifest, "Sent email notification")
 
-        # Update status
         manifest["status"] = "done"
+        log_event(
+            manifest,
+            f"Job {job_id} finished successfully → {manifest.get('total_rows', 0)} rows processed",
+        )
         save_manifest(job_id, manifest)
 
     except Exception as e:
