@@ -1,6 +1,39 @@
-# .gitignore
-keys/*.json
-# Ignore keys and secrets
-keys/
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+
+# Ignore Jupyter notebooks checkpoints
+.ipynb_checkpoints
+
+# Ignore build and dist directories
+build/
+dist/
+*.egg-info/
+
+# Ignore Git metadata
+.git/
+.gitignore
+
+# Ignore Docker-related files (only keep Dockerfile itself)
+Dockerfile
+.dockerignore
+
+# Ignore local configs and secrets
 .env
-cloudrun-env.yaml
+*.log
+
+# Ignore test files (don’t ship to Cloud Run)
+tests/
+test_local.py
+
+# Ignore IDE/editor files
+.vscode/
+.idea/
+*.swp

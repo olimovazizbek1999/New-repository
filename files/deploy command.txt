@@ -1,5 +1,22 @@
 *****Deploy command******
 
+gcloud builds submit
+
+
+
+
+
+
+gcloud run deploy lead-processor `
+  --image us-central1-docker.pkg.dev/ollie-data-cleaning/cloud-run-source-deploy/lead-processor `
+  --region us-central1 `
+  --platform managed `
+  --allow-unauthenticated `
+  --env-vars-file cloudrun-env.yaml
+
+
+
+
 gcloud run deploy lead-processor `
   --source . `
   --region us-central1 `
@@ -15,3 +32,16 @@ https://lead-processor-493590288221.us-central1.run.app/job/<Job-ID>
 ********************************************
 
 https://lead-processor-493590288221.us-central1.run.app
+
+
+
+
+
+**********cloudrun deployment****
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/ollie-data-cleaning/cloud-run-source-deploy/lead-processor
+
+
+
+*****Run test*****
+python test_local.py "File 1 - Copy (2).csv" "File 1 - Copy (2)_processed_local.csv"

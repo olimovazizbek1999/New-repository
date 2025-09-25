@@ -1,31 +1,85 @@
-<!doctype html>
+<!DOCTYPE html>
 <html>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Lead Processor</title>
-<style>
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
-form { max-width: 520px; padding: 1rem; border: 1px solid #e5e7eb; border-radius: 12px; }
-label { display:block; margin:.5rem 0 .25rem; font-weight:600; }
-input[type="email"], input[type="file"] { width:100%; padding:.5rem; }
-button { margin-top:1rem; padding:.6rem 1rem; border:0; background:black; color:white; border-radius:8px; }
-.hint { color:#6b7280; font-size:.9rem; }
-</style>
+  <title>CSV Upload</title>
+  <style>
+    #progress-section { margin-top: 20px; }
+    #logs { 
+      margin-top: 20px; 
+      padding: 10px; 
+      border: 1px solid #ccc; 
+      background: #f9f9f9; 
+      max-height: 200px; 
+      overflow-y: auto; 
+      font-family: monospace; 
+      font-size: 13px;
+    }
+  </style>
 </head>
 <body>
-<h1>Upload leads CSV</h1>
-<p class="hint">CSV headers required: First Name, Last Name, Title, Company, Email, # Employees, Industry, Keywords, Person Linkedin Url, Website, Country, a1, a2, a3, Suitable Length, Opener</p>
-<form action="/upload" method="post" enctype="multipart/form-data">
-<label for="file">CSV file</label>
-<input type="file" id="file" name="file" accept=".csv" required />
+  <h2>Upload CSV for Processing</h2>
+  <form id="upload-form" enctype="multipart/form-data">
+    <input type="file" name="file" required />
+    <input type="email" name="email" placeholder="Your email" required />
+    <button type="submit">Upload</button>
+  </form>
 
+  <div id="progress-section" style="display:none;">
+    <progress id="progress-bar" max="100" value="0"></progress>
+    <p id="progress-text">Waiting for processing...</p>
+    <div id="download-link"></div>
+    <h3>Job Logs</h3>
+    <div id="logs"></div>
+  </div>
 
-<label for="email">Your email</label>
-<input type="email" id="email" name="email" placeholder="you@company.com" required />
+  <script>
+    document.getElementById("upload-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formData = new FormData(e.target);
 
+      const res = await fetch("/upload", { method: "POST", body: formData });
+      if (!res.ok) {
+        alert("Upload failed!");
+        return;
+      }
+      const data = await res.json();
+      const jobId = data.job_id;
 
-<button type="submit">Start processing</button>
-</form>
+      document.getElementById("progress-section").style.display = "block";
+      startPolling(jobId);
+    });
+
+    let pollInterval;
+    async function checkProgress(jobId) {
+      const res = await fetch(`/progress/${jobId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      document.getElementById("progress-bar").value = data.progress;
+      document.getElementById("progress-text").innerText =
+        `Progress: ${data.progress}% (${data.processed_chunks}/${data.total_chunks} chunks)`;
+
+      if (data.status === "done" && data.final_signed_url) {
+        clearInterval(pollInterval);
+        document.getElementById("download-link").innerHTML =
+          `<a href="${data.final_signed_url}" target="_blank">Download Processed CSV</a>`;
+      }
+
+      // Fetch logs (last 20)
+      const logsRes = await fetch(`/logs/${jobId}?limit=20`);
+      if (logsRes.ok) {
+        const logsData = await logsRes.json();
+        const logsEl = document.getElementById("logs");
+        logsEl.innerHTML = logsData.logs
+          .map(l => `<div>[${l.time}] ${l.msg}</div>`)
+          .join("");
+        logsEl.scrollTop = logsEl.scrollHeight; // auto-scroll to bottom
+      }
+    }
+
+    function startPolling(jobId) {
+      pollInterval = setInterval(() => checkProgress(jobId), 5000); // every 5s
+    }
+  </script>
 </body>
 </html>
