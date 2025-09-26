@@ -99,7 +99,7 @@ async def clean_rows(rows: List[Dict], job_id=None) -> List[Dict]:
             results.append(None)
 
     async def _clean_batch(batch):
-        nonlocal _clean_failure_count
+        global _clean_failure_count   # ✅ fixed (was nonlocal)
         prompt = (
             "You are a data cleaner. Normalize personal names and company names.\n"
             "- Remove symbols.\n"
@@ -160,7 +160,7 @@ async def generate_openers(rows: List[Dict], job_id=None) -> List[Dict]:
     results: List[Dict] = [None] * len(rows)
 
     async def _gen_batch(batch, start_idx):
-        nonlocal _opener_failure_count
+        global _opener_failure_count   # ✅ fixed (was nonlocal)
         cleaned_batch = [
             {
                 "company": preclean_text(r.get("company", "")),

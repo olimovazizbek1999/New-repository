@@ -1,39 +1,55 @@
-# Use official Python image
+# Use Python base image
 FROM python:3.11-slim
 
-# Install system dependencies (needed for Playwright, lxml, etc.)
-RUN apt-get update && apt-get install -y \
+# Install Chromium dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    unzip \
+    git \
+    fonts-liberation \
     libnss3 \
+    libxss1 \
+    libasound2 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 \
     libdrm2 \
+    libgbm1 \
     libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
+    libxfixes3 \
     libxrandr2 \
-    libgbm1 \
+    libxshmfence1 \
     libpango-1.0-0 \
     libcairo2 \
-    fonts-liberation \
-    wget \
-    curl \
+    libatspi2.0-0 \
+    libglib2.0-0 \
+    libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set workdir
+# Set working directory
 WORKDIR /app
 
-# Copy requirements first (for caching)
-COPY requirements.txt .
+# Copy dependency files first
+COPY requirements.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all source code
+# ✅ Install Chromium browser only (not system deps)
+RUN playwright install chromium
+
+# Copy app code
 COPY . .
 
-# Expose Cloud Run port
-ENV PORT=8080
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PORT=8080
 
-# ✅ Run FastAPI with uvicorn, listening on the Cloud Run port
+# Expose port
+EXPOSE 8080
+
+# Start FastAPI app with Uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

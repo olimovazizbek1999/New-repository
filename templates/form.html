@@ -1,85 +1,100 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>CSV Upload</title>
-  <style>
-    #progress-section { margin-top: 20px; }
-    #logs { 
-      margin-top: 20px; 
-      padding: 10px; 
-      border: 1px solid #ccc; 
-      background: #f9f9f9; 
-      max-height: 200px; 
-      overflow-y: auto; 
-      font-family: monospace; 
-      font-size: 13px;
-    }
-  </style>
+    <title>CSV Processor</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .progress-container { width: 100%; background: #eee; border-radius: 10px; overflow: hidden; margin-top: 20px; }
+        .progress-bar { height: 24px; background: #4caf50; width: 0%; transition: width 0.4s ease; }
+        .status { margin-top: 10px; font-size: 14px; }
+        .hidden { display: none; }
+        .logs { margin-top: 20px; background: #111; color: #0f0; padding: 10px; border-radius: 8px; height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; }
+        .logs h4 { color: #fff; margin: 0 0 8px 0; font-size: 14px; }
+    </style>
 </head>
 <body>
-  <h2>Upload CSV for Processing</h2>
-  <form id="upload-form" enctype="multipart/form-data">
-    <input type="file" name="file" required />
-    <input type="email" name="email" placeholder="Your email" required />
-    <button type="submit">Upload</button>
-  </form>
+    <h2>Upload CSV for Processing</h2>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" name="file" required />
+        <input type="email" name="email" placeholder="Your email" required />
+        <button type="submit">Upload</button>
+    </form>
 
-  <div id="progress-section" style="display:none;">
-    <progress id="progress-bar" max="100" value="0"></progress>
-    <p id="progress-text">Waiting for processing...</p>
-    <div id="download-link"></div>
-    <h3>Job Logs</h3>
-    <div id="logs"></div>
-  </div>
+    <div id="progressSection" class="hidden">
+        <h3>Job Progress</h3>
+        <div class="progress-container">
+            <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div id="progressText" class="status"></div>
+        <div id="downloadLink" class="status"></div>
 
-  <script>
-    document.getElementById("upload-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const formData = new FormData(e.target);
+        <div class="logs">
+            <h4>Logs</h4>
+            <pre id="logBox">Waiting for logs...</pre>
+        </div>
+    </div>
 
-      const res = await fetch("/upload", { method: "POST", body: formData });
-      if (!res.ok) {
-        alert("Upload failed!");
-        return;
-      }
-      const data = await res.json();
-      const jobId = data.job_id;
+    <script>
+        const form = document.getElementById("uploadForm");
+        const progressSection = document.getElementById("progressSection");
+        const progressBar = document.getElementById("progressBar");
+        const progressText = document.getElementById("progressText");
+        const downloadLink = document.getElementById("downloadLink");
+        const logBox = document.getElementById("logBox");
 
-      document.getElementById("progress-section").style.display = "block";
-      startPolling(jobId);
-    });
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+            const res = await fetch("/upload", { method: "POST", body: formData });
+            const data = await res.json();
+            if (data.job_id) {
+                progressSection.classList.remove("hidden");
+                pollProgress(data.job_id);
+                pollLogs(data.job_id);
+            } else {
+                alert("Upload failed: " + JSON.stringify(data));
+            }
+        });
 
-    let pollInterval;
-    async function checkProgress(jobId) {
-      const res = await fetch(`/progress/${jobId}`);
-      if (!res.ok) return;
-      const data = await res.json();
+        async function pollProgress(jobId) {
+            try {
+                const res = await fetch(`/progress/${jobId}`);
+                const data = await res.json();
 
-      document.getElementById("progress-bar").value = data.progress;
-      document.getElementById("progress-text").innerText =
-        `Progress: ${data.progress}% (${data.processed_chunks}/${data.total_chunks} chunks)`;
+                if (data.error) {
+                    progressText.textContent = "Error: " + data.error;
+                    return;
+                }
 
-      if (data.status === "done" && data.final_signed_url) {
-        clearInterval(pollInterval);
-        document.getElementById("download-link").innerHTML =
-          `<a href="${data.final_signed_url}" target="_blank">Download Processed CSV</a>`;
-      }
+                progressBar.style.width = data.progress_percent + "%";
+                progressText.textContent =
+                    `Processed ${data.processed_rows}/${data.total_rows} rows ` +
+                    `(${data.progress_percent}%)`;
 
-      // Fetch logs (last 20)
-      const logsRes = await fetch(`/logs/${jobId}?limit=20`);
-      if (logsRes.ok) {
-        const logsData = await logsRes.json();
-        const logsEl = document.getElementById("logs");
-        logsEl.innerHTML = logsData.logs
-          .map(l => `<div>[${l.time}] ${l.msg}</div>`)
-          .join("");
-        logsEl.scrollTop = logsEl.scrollHeight; // auto-scroll to bottom
-      }
-    }
+                if (data.final_signed_url) {
+                    downloadLink.innerHTML = `<a href="${data.final_signed_url}" target="_blank">Download Processed CSV</a>`;
+                    progressText.textContent = "✅ Job complete!";
+                } else {
+                    setTimeout(() => pollProgress(jobId), 3000); // poll every 3s
+                }
+            } catch (err) {
+                progressText.textContent = "⚠️ Failed to fetch progress: " + err;
+            }
+        }
 
-    function startPolling(jobId) {
-      pollInterval = setInterval(() => checkProgress(jobId), 5000); // every 5s
-    }
-  </script>
+        async function pollLogs(jobId) {
+            try {
+                const res = await fetch(`/logs/${jobId}?limit=20`);
+                const data = await res.json();
+                if (data.logs) {
+                    logBox.textContent = data.logs.map(l => `[${l.time}] ${l.msg}`).join("\n");
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+            } catch (err) {
+                logBox.textContent = "⚠️ Failed to fetch logs: " + err;
+            }
+            setTimeout(() => pollLogs(jobId), 4000); // poll logs every 4s
+        }
+    </script>
 </body>
 </html>

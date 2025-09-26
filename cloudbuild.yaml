@@ -1,25 +1,36 @@
 steps:
-# Build the image
-- name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/$PROJECT_ID/lead-processor', '.']
+  # Build container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/lead-processor', '.']
 
-# Push the image
-- name: 'gcr.io/cloud-builders/docker'
-  args: ['push', 'gcr.io/$PROJECT_ID/lead-processor']
+  # Push image to registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/lead-processor']
 
-# Deploy to Cloud Run
-- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-  entrypoint: gcloud
-  args:
-  - run
-  - deploy
-  - lead-processor
-  - --image
-  - gcr.io/$PROJECT_ID/lead-processor
-  - --region
-  - us-central1
-  - --platform
-  - managed
-  - --allow-unauthenticated
-  - --env-vars-file
-  - cloudrun-env.yaml
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      [
+        'run',
+        'deploy',
+        'lead-processor',
+        '--image',
+        'gcr.io/$PROJECT_ID/lead-processor',
+        '--region',
+        'us-central1',
+        '--platform',
+        'managed',
+        '--allow-unauthenticated',
+        '--memory',
+        '2Gi',
+        '--timeout',
+        '900',
+        '--max-instances',
+        '5',
+        '--env-vars-file',
+        'cloudrun-env.yaml',
+      ]
+
+images:
+  - 'gcr.io/$PROJECT_ID/lead-processor'

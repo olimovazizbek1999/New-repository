@@ -1,9 +1,19 @@
+
+
+******deploy all at once*****
+gcloud builds submit --tag gcr.io/ollie-data-cleaning/lead-processor
+gcloud run deploy lead-processor `
+  --image gcr.io/ollie-data-cleaning/lead-processor `
+  --region us-central1 `
+  --allow-unauthenticated `
+  --platform managed `
+  --env-vars-file cloudrun-env.yaml
+
+
+
+
+
 *****Deploy command******
-
-gcloud builds submit
-
-
-
 
 
 
